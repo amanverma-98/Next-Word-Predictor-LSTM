@@ -6,7 +6,7 @@ import random
 
 # ---------- CONFIG ----------
 SEQ_LEN = 4
-DEVICE = "cpu"   # Streamlit runs on CPU
+DEVICE = "cpu"
 TOP_K = 5
 
 # ---------- MODEL ----------
@@ -33,50 +33,135 @@ model.load_state_dict(checkpoint["model_state"])
 model.to(DEVICE)
 model.eval()
 
-# ---------- AUTOCOMPLETE ----------
-def generate_suggestions(prompt, max_words=5, temperature=0.7, top_k=5):
-    model.eval()
-
+# ---------- PROGRESSIVE AUTOCOMPLETE ----------
+def generate_progressive_suggestions(prompt, max_words=5):
     words = prompt.lower().split()
     suggestions = []
 
     for _ in range(max_words):
         seq = [word2idx.get(w, 0) for w in words[-SEQ_LEN:]]
         seq = [0] * (SEQ_LEN - len(seq)) + seq
-
-        x = torch.tensor(seq).unsqueeze(0).to(DEVICE)
+        x = torch.tensor(seq).unsqueeze(0)
 
         with torch.no_grad():
-            logits = model(x) / temperature
-            probs = torch.softmax(logits, dim=-1)
-            top_probs, top_idx = torch.topk(probs, top_k)
+            probs = F.softmax(model(x), dim=-1)
+            top_probs, top_idx = torch.topk(probs, TOP_K)
 
-            next_word = random.choices(
+            next_word_id = random.choices(
                 top_idx[0].tolist(),
                 weights=top_probs[0].tolist()
             )[0]
 
-        next_word = idx2word.get(next_word, "")
+        next_word = idx2word.get(next_word_id, "")
         words.append(next_word)
-
-        # store progressive suggestion
         suggestions.append(" ".join(words))
 
     return suggestions
 
-# ---------- STREAMLIT UI ----------
-st.set_page_config(page_title="Next Word Predictor", layout="centered")
+# ---------- SAME-LENGTH SUGGESTIONS ----------
+def generate_alternative_queries(prompt, num_sentences=5, next_words=4):
+    alternatives = []
 
-st.title("🔍 Search Autocomplete")
+    for _ in range(num_sentences):
+        words = prompt.lower().split()
 
-user_input = st.text_input("Type your query:", "how to learn")
+        for _ in range(next_words):
+            seq = [word2idx.get(w, 0) for w in words[-SEQ_LEN:]]
+            seq = [0] * (SEQ_LEN - len(seq)) + seq
+            x = torch.tensor(seq).unsqueeze(0)
 
-if st.button("Show suggestions"):
-    if user_input.strip() == "":
-        st.warning("Please type something")
+            with torch.no_grad():
+                probs = F.softmax(model(x), dim=-1)
+                top_probs, top_idx = torch.topk(probs, TOP_K)
+
+                next_word_id = random.choices(
+                    top_idx[0].tolist(),
+                    weights=top_probs[0].tolist()
+                )[0]
+
+            next_word = idx2word.get(next_word_id, "")
+            words.append(next_word)
+
+        alternatives.append(" ".join(words))
+
+    return alternatives
+
+
+# ---------- UI ----------
+st.set_page_config(page_title="Next Word Predictor", layout="wide")
+
+st.markdown("""
+<style>
+.main > div {
+    padding-top: 2rem;
+    max-width: 1200px;
+    margin: auto;
+}
+
+.card {
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    background-color: #ffffff;
+    border: 1px solid #e1e4e8;
+    font-size: 16px;
+    color: #000000;   /* 👈 FIX */
+}
+
+.section-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: #000000;   /* 👈 FIX */
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+st.title("🔍 Smart Next Word Predictor")
+st.caption("LSTM-based next-word prediction trained on 1.4 million words")
+
+# ---------- INPUT ----------
+query = st.text_input(
+    "Type your query",
+    placeholder="how to learn python"
+)
+
+# ---------- BUTTON ----------
+predict = st.button("🔮 Predict")
+
+# ---------- OUTPUT (PARALLEL) ----------
+if predict:
+    if query.strip() == "":
+        st.warning("Please type a query")
+    elif len(query.split()) < 2:
+        st.info("Type at least 2 words to get predictions")
     else:
-        suggestions = generate_suggestions(user_input, max_words=5)
+        col1, col2 = st.columns(2, gap="large")
 
-        st.subheader("Suggestions")
-        for i, s in enumerate(suggestions, 1):
-            st.write(f"{i}. {s}")
+        # Progressive Suggestions
+        with col1:
+            st.subheader("📈 Progressive Suggestions")
+            progressive = generate_progressive_suggestions(query, max_words=5)
+
+            for i, s in enumerate(progressive, 1):
+                st.markdown(
+                    f'<div class="card"><strong>{i}.</strong> {s}</div>',
+                    unsafe_allow_html=True
+                )
+
+        # Alternative Queries
+        with col2:
+            st.subheader("📈 Sentence Suggestions")
+            alternatives = generate_alternative_queries(
+                query,
+                num_sentences=5,
+                next_words=4
+            )
+
+            for i, s in enumerate(alternatives, 1):
+                st.markdown(
+                    f'<div class="card"><strong>{i}.</strong> {s}</div>',
+                    unsafe_allow_html=True
+                )
+
